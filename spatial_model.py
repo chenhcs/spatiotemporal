@@ -17,6 +17,56 @@ from model import FeedForward
 
 logging.getLogger().setLevel(logging.INFO)
 
+from scipy.spatial import cKDTree
+from scipy.sparse import coo_matrix
+
+
+def closeness_graph(context, threshold=10):
+    """
+    Computes the adjacency graph of a set of points where edges connect nodes that are within a specified distance.
+
+    Parameters:
+    context (numpy array): 2D numpy array where each row represents a point in n-dimensional space.
+    threshold (float): The maximum distance between nodes to consider an edge.
+
+    Returns:
+    adj_matrix (tf.sparse.SparseTensor): Adjacency matrix representing the graph.
+    """
+    # Build a KDTree for efficient neighbor lookup
+    tree = cKDTree(context)
+
+    # Query the tree for all pairs within the threshold distance
+    pairs = tree.query_pairs(r=threshold)
+
+    # Initialize lists to construct the sparse adjacency matrix
+    row = []
+    col = []
+    data = []
+
+    for i, j in pairs:
+        # Since the graph is undirected, add both (i, j) and (j, i)
+        row.extend([i, j])
+        col.extend([j, i])
+        data.extend([1, 1])
+
+    n_points = context.shape[0]
+
+    # Create a sparse matrix in COOrdinate format
+    adj_sparse = coo_matrix((data, (row, col)), shape=(n_points, n_points))
+
+    # Convert the sparse matrix to a TensorFlow sparse tensor
+    adj_tf_sparse = tf.sparse.SparseTensor(
+        indices=np.vstack((adj_sparse.row, adj_sparse.col)).T,
+        values=adj_sparse.data.astype(np.float32),
+        dense_shape=adj_sparse.shape
+    )
+
+    # Ensure the indices are sorted in row-major order
+    adj_tf_sparse = tf.sparse.reorder(adj_tf_sparse)
+
+    return adj_tf_sparse
+
+
 #Data the context as input
 def delaunay_to_graph(context):
     """
@@ -59,6 +109,10 @@ def delaunay_to_graph(context):
 
 
 
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+
 class GraphAttention(layers.Layer):
     def __init__(
         self,
@@ -71,9 +125,11 @@ class GraphAttention(layers.Layer):
         self.units = units
         self.kernel_initializer = keras.initializers.get(kernel_initializer)
         self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
+        # Store the configuration strings for serialization
+        self.kernel_initializer_config = keras.initializers.serialize(self.kernel_initializer)
+        self.kernel_regularizer_config = keras.regularizers.serialize(self.kernel_regularizer)
 
     def build(self, input_shape):
-
         self.kernel = self.add_weight(
             shape=(input_shape[0][-1], self.units),
             trainable=True,
@@ -125,12 +181,22 @@ class GraphAttention(layers.Layer):
             segment_ids=edges[:, 0],
             num_segments=tf.shape(node_states)[0],
         )
-        return out
+        return out, attention_scores_norm
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'units': self.units,
+            'kernel_initializer': self.kernel_initializer_config,
+            'kernel_regularizer': self.kernel_regularizer_config,
+        })
+        return config
 
 
 class MultiHeadGraphAttention(layers.Layer):
     def __init__(self, units, num_heads=8, merge_type="concat", **kwargs):
         super().__init__(**kwargs)
+        self.units = units
         self.num_heads = num_heads
         self.merge_type = merge_type
         self.attention_layers = [GraphAttention(units) for _ in range(num_heads)]
@@ -140,7 +206,7 @@ class MultiHeadGraphAttention(layers.Layer):
 
         # Obtain outputs from each attention head
         outputs = [
-            attention_layer([atom_features, pair_indices])
+            attention_layer([atom_features, pair_indices])[0]
             for attention_layer in self.attention_layers
         ]
         # Concatenate or average the node states from each head
@@ -150,6 +216,25 @@ class MultiHeadGraphAttention(layers.Layer):
             outputs = tf.reduce_mean(tf.stack(outputs, axis=-1), axis=-1)
         # Activate and return node states
         return tf.nn.relu(outputs)
+
+    def attention_scores(self, inputs):
+        atom_features, pair_indices = inputs
+
+        # Obtain attention scores from each attention head
+        outputs = [
+            attention_layer([atom_features, pair_indices])[1]
+            for attention_layer in self.attention_layers
+        ]
+        return outputs
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'units': self.units,
+            'num_heads': self.num_heads,
+            'merge_type': self.merge_type,
+        })
+        return config
 
 
 class GraphAttentionNetwork(keras.Model):
@@ -166,9 +251,15 @@ class GraphAttentionNetwork(keras.Model):
         super().__init__(**kwargs)
         self.node_states = node_states
         self.edges = edges
+        self.hidden_units = hidden_units
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+
         self.preprocess = layers.Dense(hidden_units * num_heads, activation="relu")
         self.attention_layers = [
-            MultiHeadGraphAttention(hidden_units, num_heads) for _ in range(num_layers)
+            MultiHeadGraphAttention(hidden_units, num_heads)
+            for _ in range(num_layers)
         ]
         self.output_layer = layers.Dense(output_dim)
 
@@ -179,6 +270,16 @@ class GraphAttentionNetwork(keras.Model):
             x = attention_layer([x, edges]) + x
         outputs = self.output_layer(x)
         return outputs
+
+    # Compute the attention scores for each GAT layer
+    def attention_scores(self, node_states, edges):
+        x = self.preprocess(node_states)
+        scores = []
+        for attention_layer in self.attention_layers:
+            scores.append(attention_layer.attention_scores([x, edges]))
+            x = attention_layer([x, edges]) + x
+        # scores[i][j] is the i'th layer's j'th head.
+        return scores
 
     def train_step(self, data):
         indices, labels = data
@@ -215,6 +316,23 @@ class GraphAttentionNetwork(keras.Model):
 
         return {m.name: m.result() for m in self.metrics}
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'node_states': self.node_states.numpy(),
+            'edges': self.edges.numpy(),
+            'hidden_units': self.hidden_units,
+            'num_heads': self.num_heads,
+            'num_layers': self.num_layers,
+            'output_dim': self.output_dim,
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        node_states = tf.constant(config.pop('node_states'))
+        edges = tf.constant(config.pop('edges'))
+        return cls(node_states=node_states, edges=edges, **config)
 
 
 #GCN
@@ -286,21 +404,27 @@ class GraphConvolutionalNetwork(keras.Model):
         hidden_units,
         num_layers,
         output_dim,
+        self_loops = False,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.node_states = node_states
         self.adjacency = tf.cast(adjacency, tf.float32)
+        self.self_loops = self_loops
+        self.preprocess = layers.Dense(hidden_units, activation="relu")
+        if self.self_loops:
+            self.adjacency = tf.sparse.add(adjacency, tf.sparse.eye(adjacency.shape[0]))
         self.conv_layers = [
             GraphConvolution(hidden_units, activation="relu") for _ in range(num_layers)
         ]
+
         self.output_layer = GraphConvolution(output_dim)
 
     def call(self, inputs):
         node_states, adjacency = inputs
-        x = node_states
+        x = self.preprocess(node_states)
         for conv_layer in self.conv_layers:
-            x = conv_layer([x, adjacency])  # Residual connection
+            x = conv_layer([x, adjacency])# Residual connection
         outputs = self.output_layer([x, adjacency])
         return outputs
 
@@ -407,6 +531,7 @@ class GraphSAGENetwork(keras.Model):
         super().__init__(**kwargs)
         self.node_states = node_states
         self.adjacency = tf.cast(adjacency, tf.float32)
+        x = self.preprocess(node_states)
         self.sage_layers = [
             GraphSAGELayer(hidden_units, activation="relu") for _ in range(num_layers)
         ]

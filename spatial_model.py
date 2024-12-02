@@ -109,9 +109,33 @@ def delaunay_to_graph(context):
 
 
 
-import tensorflow as tf
+
 from tensorflow import keras
 from tensorflow.keras import layers
+
+class SparseDenseLayer(tf.keras.layers.Layer):
+    def __init__(self, units, activation=None):
+        super(SparseDenseLayer, self).__init__()
+        self.units = units
+        self.activation = tf.keras.activations.get(activation)
+
+    def build(self, input_shape):
+        # Initialize weights
+        self.W = self.add_weight(
+            shape=(input_shape[-1], self.units),
+            initializer='random_normal',
+            trainable=True
+        )
+
+    def call(self, inputs):
+        # Perform sparse-dense matrix multiplication
+        output = tf.sparse.sparse_dense_matmul(inputs, self.W)
+        # Apply activation function
+        if self.activation is not None:
+            output = self.activation(output)
+        return output
+
+
 
 class GraphAttention(layers.Layer):
     def __init__(
@@ -246,6 +270,7 @@ class GraphAttentionNetwork(keras.Model):
         num_heads,
         num_layers,
         output_dim,
+        sparse=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -256,12 +281,18 @@ class GraphAttentionNetwork(keras.Model):
         self.num_layers = num_layers
         self.output_dim = output_dim
 
-        self.preprocess = layers.Dense(hidden_units * num_heads, activation="relu")
+        self.sparse = sparse
+        if self.sparse:
+            self.preprocess = SparseDenseLayer(hidden_units * num_heads, activation="relu")
+            self.preprocess.build(input_shape=node_states.shape)
+        else:
+            self.preprocess = layers.Dense(hidden_units * num_heads, activation="relu")
         self.attention_layers = [
             MultiHeadGraphAttention(hidden_units, num_heads)
             for _ in range(num_layers)
         ]
         self.output_layer = layers.Dense(output_dim)
+
 
     def call(self, inputs):
         node_states, edges = inputs
@@ -569,3 +600,265 @@ class GraphSAGENetwork(keras.Model):
         outputs = self([self.node_states, self.adjacency])
         logits = tf.gather(outputs, indices)
         return tf.nn.softmax(logits)
+
+
+
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+class SparseGraphAttention(layers.Layer):
+    def __init__(
+        self,
+        units,
+        kernel_initializer="glorot_uniform",
+        kernel_regularizer=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.units = units
+        self.kernel_initializer = keras.initializers.get(kernel_initializer)
+        self.kernel_regularizer = keras.regularizers.get(kernel_regularizer)
+        # Store the configuration strings for serialization
+        self.kernel_initializer_config = keras.initializers.serialize(self.kernel_initializer)
+        self.kernel_regularizer_config = keras.regularizers.serialize(self.kernel_regularizer)
+
+    def build(self, input_shape):
+        feature_dim = input_shape[0][-1]
+        self.kernel = self.add_weight(
+            shape=(feature_dim, self.units),
+            initializer=self.kernel_initializer,
+            regularizer=self.kernel_regularizer,
+            name="kernel",
+        )
+        self.kernel_attention = self.add_weight(
+            shape=(2 * self.units, 1),
+            initializer=self.kernel_initializer,
+            regularizer=self.kernel_regularizer,
+            name="kernel_attention",
+        )
+        self.built = True
+
+    def call(self, inputs):
+        node_states, edges = inputs  # node_states: [N, F], edges: [E, 2]
+
+        # Convert edges to a sparse adjacency matrix
+        num_nodes = tf.shape(node_states)[0]
+        indices = edges
+        values = tf.ones(tf.shape(indices)[0], dtype=tf.float32)
+        adjacency = tf.sparse.SparseTensor(
+            indices=indices,
+            values=values,
+            dense_shape=(num_nodes, num_nodes),
+        )
+        adjacency = tf.sparse.reorder(adjacency)  # Ensure correct ordering
+
+        # Linearly transform node states using dense matrix multiplication
+        node_states_transformed = tf.matmul(node_states, self.kernel)  # [N, units]
+
+        # Compute attention coefficients
+        edge_indices = adjacency.indices  # [E, 2]
+        edge_src = edge_indices[:, 0]
+        edge_dst = edge_indices[:, 1]
+
+        # Gather features of source and target nodes
+        node_src = tf.gather(node_states_transformed, edge_src)  # [E, units]
+        node_dst = tf.gather(node_states_transformed, edge_dst)  # [E, units]
+
+        # Concatenate features
+        edge_features = tf.concat([node_src, node_dst], axis=1)  # [E, 2 * units]
+
+        # Compute attention scores
+        attention_scores = tf.matmul(edge_features, self.kernel_attention)  # [E, 1]
+        attention_scores = tf.nn.leaky_relu(attention_scores)
+        attention_scores = tf.squeeze(attention_scores, axis=-1)  # [E]
+
+        # Normalize attention scores
+        attention_scores = tf.exp(attention_scores)
+        attention_sum = tf.math.unsorted_segment_sum(
+            attention_scores, edge_src, num_segments=num_nodes
+        )
+        attention_scores_norm = attention_scores / tf.gather(attention_sum, edge_src)
+
+        # Apply attention scores
+        weighted_node_dst = node_dst * tf.expand_dims(attention_scores_norm, axis=-1)  # [E, units]
+
+        # Aggregate messages
+        out = tf.math.unsorted_segment_sum(
+            data=weighted_node_dst,
+            segment_ids=edge_src,
+            num_segments=num_nodes,
+        )  # [N, units]
+
+        return out, attention_scores_norm
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'units': self.units,
+            'kernel_initializer': self.kernel_initializer_config,
+            'kernel_regularizer': self.kernel_regularizer_config,
+        })
+        return config
+
+
+
+class SparseMultiHeadGraphAttention(layers.Layer):
+    def __init__(self, units, num_heads=8, merge_type="concat", **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+        self.num_heads = num_heads
+        self.merge_type = merge_type
+        self.attention_layers = [SparseGraphAttention(units) for _ in range(num_heads)]
+
+    def call(self, inputs):
+        node_states, edges = inputs  # node_states can be SparseTensor
+
+        # Obtain outputs from each attention head
+        outputs = []
+        for attention_layer in self.attention_layers:
+            out, _ = attention_layer([node_states, edges])
+            outputs.append(out)
+
+        # Concatenate or average the node states from each head
+        if self.merge_type == "concat":
+            outputs = tf.concat(outputs, axis=-1)
+        else:
+            outputs = tf.reduce_mean(tf.stack(outputs, axis=-1), axis=-1)
+
+        # Activate and return node states
+        return tf.nn.relu(outputs)
+
+    def attention_scores(self, inputs):
+        node_states, edges = inputs
+
+        # Obtain attention scores from each attention head
+        scores = [
+            attention_layer([node_states, edges])[1]
+            for attention_layer in self.attention_layers
+        ]
+        return scores
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'units': self.units,
+            'num_heads': self.num_heads,
+            'merge_type': self.merge_type,
+        })
+        return config
+
+
+class SparseGraphAttentionNetwork(keras.Model):
+    def __init__(
+        self,
+        node_states,
+        edges,
+        hidden_units,
+        num_heads,
+        num_layers,
+        output_dim,
+        sparse=False,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.node_states = node_states
+        self.edges = edges
+        self.hidden_units = hidden_units
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.sparse = sparse
+
+        # Preprocessing layer (no need for conditional sparse handling)
+        self.preprocess = SparseDenseLayer(hidden_units * num_heads, activation="relu")
+
+        self.attention_layers = [
+            SparseMultiHeadGraphAttention(hidden_units, num_heads)
+            for _ in range(num_layers)
+        ]
+        self.output_layer = layers.Dense(output_dim)
+
+    def call(self, inputs):
+        node_states, edges = inputs
+        x = self.preprocess(node_states)  # node_states can be sparse or dense
+        for attention_layer in self.attention_layers:
+            x_new = attention_layer([x, edges])
+            x = x_new + x  # Residual connection
+        outputs = self.output_layer(x)
+        return outputs
+
+    # Rest of the class remains unchanged
+
+
+    # Compute the attention scores for each GAT layer
+    def attention_scores(self, node_states, edges):
+        if self.sparse:
+            x = self.preprocess(node_states)
+        else:
+            x = self.preprocess(node_states)
+
+        scores = []
+        for attention_layer in self.attention_layers:
+            layer_scores = attention_layer.attention_scores([x, edges])
+            scores.append(layer_scores)
+            x_new = attention_layer([x, edges])
+            x = x_new + x  # Residual connection
+        # scores[i][j] is the i-th layer's j-th head.
+        return scores
+
+    def train_step(self, data):
+        indices, labels = data
+
+        with tf.GradientTape() as tape:
+            # Forward pass
+            outputs = self([self.node_states, self.edges])
+            # Compute loss
+            logits = tf.gather(outputs, indices)
+            loss = self.compiled_loss(labels, logits)
+        # Compute gradients
+        grads = tape.gradient(loss, self.trainable_weights)
+        # Apply gradients (update weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+        # Update metric(s)
+        self.compiled_metrics.update_state(labels, logits)
+
+        return {m.name: m.result() for m in self.metrics}
+
+    def predict_step(self, data):
+        indices = data
+        # Forward pass
+        outputs = self([self.node_states, self.edges])
+        # Compute probabilities
+        logits = tf.gather(outputs, indices)
+        return tf.nn.softmax(logits)
+
+    def test_step(self, data):
+        indices, labels = data
+        # Forward pass
+        outputs = self([self.node_states, self.edges])
+        # Compute loss
+        logits = tf.gather(outputs, indices)
+        loss = self.compiled_loss(labels, logits)
+        # Update metric(s)
+        self.compiled_metrics.update_state(labels, logits)
+
+        return {m.name: m.result() for m in self.metrics}
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'hidden_units': self.hidden_units,
+            'num_heads': self.num_heads,
+            'num_layers': self.num_layers,
+            'output_dim': self.output_dim,
+            'sparse': self.sparse,
+        })
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)

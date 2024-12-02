@@ -8,12 +8,12 @@
 import sys
 import os
 
-# Get the absolute path of the project directory
-project_dir = os.path.dirname(os.path.abspath(__file__))
+# Get the project directory from the environment variable
+project_dir = os.environ.get('PROJECT_DIR', '/default/path/to/project')
 
 # Add the project directory to sys.path
 if project_dir not in sys.path:
-    sys.path.insert(0, project_dir)
+    sys.path.append(project_dir)
 
 import numpy as np
 import tensorflow as tf
@@ -44,7 +44,7 @@ from spatial_model import (
 
 
 # Define output directory on shared filesystem
-output_dir = os.path.join(os.environ['HOME'], 'results', 'fig')
+output_dir = os.path.join(project_dir, 'fig')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
@@ -78,8 +78,8 @@ def main():
 
     with strategy.scope():
         # Load real data
-        # data_path = os.path.join(os.curdir, 'Dorsal_midbrain_cell_bin.h5ad')
-        data_path = os.path.join(os.curdir, 'simulation/st_simu.h5ad')
+        # data_path = os.path.join(project_dir, 'Dorsal_midbrain_cell_bin.h5ad')
+        data_path = os.path.join(project_dir, 'simulation/st_simu.h5ad')
         adata, coordinates = load_data(data_path)
 
         # Encode cell types
@@ -258,13 +258,13 @@ def main():
             plot_confusion_matrix(cfm, class_values)
 
             attention_weights = gnn_model.attention_scores(node_states, adj_mat.indices)
-            compute_and_visualize_entropy(adj_mat, attention_weights)
+            compute_and_visualize_entropy(adj_mat, attention_weights, output_dir)
             plot_pairwise_attention_weights(adj_mat, attention_weights, cell_types, class_values)
             attention_scores_l1, attention_scores_l2 = compute_attention_score(
                 adj_mat.indices, cell_types, class_values, attention_weights
             )
-            plot_attention_matrices(attention_scores_l1, class_values, os.path.join(os.curdir(), 'figure'), 'L1')
-            plot_attention_matrices(attention_scores_l2, class_values, os.path.join(os.curdir(), 'figure'), 'L2')
+            plot_attention_matrices(attention_scores_l1, class_values, output_dir, 'L1')
+            plot_attention_matrices(attention_scores_l2, class_values, output_dir, 'L2')
 
         # Save training plots
         if cross_validation:

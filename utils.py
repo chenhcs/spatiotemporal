@@ -62,10 +62,13 @@ def preprocess(adata):
     """
     Basic preprocessing:
     - Filter cells and genes,
+    - Normalize and apply log1p,
     - Retain highly variable genes.
     """
     sc.pp.filter_cells(adata, min_genes=100)
     sc.pp.filter_genes(adata, min_counts=3)
+    sc.pp.normalize_total(adata, target_sum=1e3)
+    sc.pp.log1p(adata)
     sc.pp.highly_variable_genes(adata, n_top_genes=1000)
     adata = adata[:, adata.var["highly_variable"]].copy()
     return adata

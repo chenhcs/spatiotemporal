@@ -149,38 +149,6 @@ def load_mouse_midbrain_data(path, batchs=None):
     coordinates = adata_time_point.obsm["spatial"]
     return adata_time_point, coordinates
 
-def encode_cell_types(adata, encode=True):
-    """
-    Maps each unique cell type to an integer index (or vice versa).
-    """
-    idx_cell_types = {}
-    cell_idx_types = {}
-    for idx, cell_type in enumerate(np.unique(adata.obs['Cell Types'])):
-        cell_idx_types[cell_type] = idx
-        idx_cell_types[idx] = cell_type
-
-    if encode:
-        cell_types = adata.obs['Cell Types'].map(cell_idx_types)
-    else:
-        cell_types = adata.obs['Cell Types']
-    return cell_types, idx_cell_types.values()
-
-def sparse_tensor_to_networkx(adj_sparse, cell_type_map, directed=False):
-    """
-    Converts a TF SparseTensor adjacency matrix to a NetworkX graph.
-    """
-    if not tf.executing_eagerly():
-        tf.compat.v1.enable_eager_execution()
-
-    indices = adj_sparse.indices.numpy()
-    values = adj_sparse.values.numpy()
-    edge_list = [(int(i), int(j), float(w)) for (i, j), w in zip(indices, values)]
-
-    G = nx.DiGraph() if directed else nx.Graph()
-    G.add_weighted_edges_from(edge_list)
-    nx.set_node_attributes(G, cell_type_map, 'cell_type')
-    return G
-
 def acquire_sparse_data(X):
     """
     Converts a (possibly) CSR/CSC matrix to a TF SparseTensor.

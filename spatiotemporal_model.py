@@ -7,14 +7,14 @@ from GNN_model import GATConv
 class GATRNNCell(tf.keras.layers.AbstractRNNCell):
     def __init__(self, input_dim, hidden_dim, num_layers=2, num_heads=1, dropout_rate=0.0, **kwargs):
         """
-        Custom RNN cell using multi-layer GATs.
+        Customized RNN cell using multi-layer GATs, can be intialized and used as input to the RNN in keras.
 
         Args:
-          input_dim: Dimensionality of external input features at each time step.
-          hidden_dim: Dimensionality of the hidden state (must be divisible by num_heads).
-          num_layers: Number of stacked GATConv layers.
-          num_heads: Number of attention heads.
-          dropout_rate: Dropout rate on attention coefficients.
+          input_dim: Dimensionality of external input features at each time step
+          hidden_dim: Dimensionality of the hidden state (must be divisible by num_heads)
+          num_layers: Number of stacked GATConv layers
+          num_heads: Number of attention heads for each GATConv layer
+          dropout_rate: Dropout rate on attention coefficients
         """
         super().__init__(**kwargs)
         self.input_dim = input_dim
@@ -36,6 +36,7 @@ class GATRNNCell(tf.keras.layers.AbstractRNNCell):
                     dropout_rate=dropout_rate
                 )
             )
+        # Linear layer has the same hidden dimension as the GATConv
         self.linear = layers.Dense(hidden_dim)
 
     @property
@@ -59,7 +60,7 @@ class GATRNNCell(tf.keras.layers.AbstractRNNCell):
         Returns:
           A tuple (output, new_states) with shape [batch, num_nodes, hidden_dim].
         """
-        # Unpack the tuple input.
+        # Unpack the tuple input
         x_t, A_t = inputs  # x_t: [batch, num_nodes, input_dim], A_t: [batch, E, 2]
         batch_size = tf.shape(x_t)[0]
         num_nodes = tf.shape(x_t)[1]
@@ -76,13 +77,17 @@ class GATRNNCell(tf.keras.layers.AbstractRNNCell):
                 h = gat([h, A_sample], training=training)
             return h
 
+        # Batch training
         gat_output = tf.map_fn(apply_gat, (x_t, A_t), dtype=tf.float32)
-        combined = tf.concat([gat_output, prev_state], axis=-1)  # [batch, num_nodes, 2 * hidden_dim]
+        
+        '''Add any post-processing here; in practice, we should apply a readout function or extract the node feature for the target node.'''
+        
+        combined = tf.concat([gat_output, prev_state], axis=-1)  # Combine the hidden dimension and the previous_hidden [batch, num_nodes, 2 * hidden_dim]
         next_state = self.linear(combined)  # [batch, num_nodes, hidden_dim]
         return next_state, [next_state]
 
 
-# ------------------- Test Case -------------------
+# ------------------- Test -------------------
 
 if __name__ == '__main__':
     # Toy example

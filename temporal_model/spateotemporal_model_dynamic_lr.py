@@ -608,7 +608,7 @@ for b in range(1): #int(len(context)/1000) + 1
     np.save('weight_test_triple/attention_weights_all_sample_' + str(b * 1000) + '.npy', weight_all)
 
 
-for b in range(int(len(context)/1000) + 1):
+for b in range(int(len(ligrecp_exp_val)/1000) + 1):
     predictions1, predictions2 = transformer([ligrecp_exp_val[b * 1000: (b+1) * 1000], tf_exp_val[b * 1000: (b+1) * 1000], target_exp_val[b * 1000: (b+1) * 1000]])
     x_vq = transformer.decoder.x_vq1
     tf_vk = transformer.decoder.tf_vk1
@@ -649,7 +649,7 @@ for b in range(int(len(context)/1000) + 1):
 ################################################################
 
 head = 0
-for b in range(int(len(context)/1000) + 1):
+for b in range(int(len(ligrecp_exp_val)/1000) + 1):
     predictions1, predictions2 = transformer([ligrecp_exp[b * 1000: (b+1) * 1000], tf_exp[b * 1000: (b+1) * 1000], target_exp[b * 1000: (b+1) * 1000]])
     #print(b, predictions.shape)
     attn_scores = transformer.decoder.dec_cross_layers_tf.last_attn_scores

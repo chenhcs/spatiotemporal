@@ -388,7 +388,11 @@ class Decoder(tf.keras.layers.Layer):
     self.recp_vk = receptor_gene_embedding #signaling gene embedding (batch_size, seq_len, genes, d_model)
 
     ##tf_exp_y3 = lr_model(ligrecp_exp, ligand_gene_embedding, receptor_gene_embedding)
-    ##build ligand receptor interaction model using gene embeddings of ligand and receptors?
+    ##We can build a neural network to predict tf/target gene expression from the product of ligand and receptor genes
+    ##We can use gene embeddings to reconstruct the weights of the first layer of the neural network
+    ##The first layer of the neural network has the weights W of the size (n_ligand*n_receptor, h_dim)
+    ##On the other hand, for each cell, we have the ligand gene embeddings "stored in ligand_gene_embedding" of size (n_ligand, h_dim), and receptor gene embeddings "stored in receptor_gene_embedding" of size (n_receptor, h_dim)
+    ##we can be reconstructed the weight matrix W by the pairwise elementwise product of every row in "ligand_gene_embedding" with every row in "receptor_gene_embedding", which has the shape of (n_ligand, n_receptor, h_dim)
     return target_exp_y1, target_exp_y2
 
 class Transformer(tf.keras.Model):
@@ -516,7 +520,7 @@ transformer.compile(
     )
 
 
-eps = 5
+eps = 3
 
 history = transformer.fit((ligrecp_exp, tf_exp, target_exp), {"output_1": target_exp_y, "output_2": target_exp_y},
                 batch_size=3,
@@ -526,7 +530,7 @@ history = transformer.fit((ligrecp_exp, tf_exp, target_exp), {"output_1": target
 predictions, predictions2 = transformer([ligrecp_exp[:1000], tf_exp[:1000], target_exp[:1000]]) #ligand, context, input, ligand_neighbor, graph
 print(predictions.shape)
 
-attn_scores = transformer.decoder.dec_cross_layers_tf[-1].last_attn_scores
+attn_scores = transformer.decoder.dec_cross_layers_tf.last_attn_scores
 
 plt.clf()
 plt.matshow(predictions[:101, 2, :])
@@ -648,8 +652,8 @@ head = 0
 for b in range(int(len(context)/1000) + 1):
     predictions1, predictions2 = transformer([ligrecp_exp[b * 1000: (b+1) * 1000], tf_exp[b * 1000: (b+1) * 1000], target_exp[b * 1000: (b+1) * 1000]])
     #print(b, predictions.shape)
-    attn_scores = transformer.decoder.dec_cross_layers_tf[-1].last_attn_scores
-    attn_scores_lg = transformer.decoder.dec_cross_layers_ligand[-1].last_attn_scores
+    attn_scores = transformer.decoder.dec_cross_layers_tf.last_attn_scores
+    attn_scores_lg = transformer.decoder.dec_cross_layers_ligand.last_attn_scores
     for i in range(attn_scores.shape[0]):
         attention = attn_scores[i]
         print(attention.shape)

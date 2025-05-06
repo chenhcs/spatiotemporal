@@ -1,3 +1,9 @@
+# Updates
+### May 6
+- In infer_pseudotime_metacell_01norm.py, added the function to merge cells into meta cells. Change z score normalization to min max normalization.
+- In spateotemporal_model_dynamic_global_percell.py, updated the way to embed expression values, added l1 normalization of regulatory networks.
+- In spateotemporal_model_dynamic_global_percell.py, the current model learns a global regulatory netowork for the whole dataset from gene token embeddings only, while learns a cell specific regulatory network from gene token + expression embeddings.
+
 # spatiotemporal
 
 reconstruct pseudotime - learn_pseudotime.py

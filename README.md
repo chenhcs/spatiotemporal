@@ -1,4 +1,9 @@
 # Updates
+### May 8
+- In spateotemporal_model_dynamic_global_percell_average_neighbor.py, predict receptor expression from averaged neighboring ligand expression.
+- In spateotemporal_model_dynamic_global_percell_neighbor_attention.py, predict receptor expression from neighboring ligand expression, while adding attention weights to each neighboring cell.
+- Updated infer_pseudotime_metacell_01norm_seperate_neighbor.py. For ligand expression array, instead of averaging all the neighbors, ligand expression of each neighboring cell is saved.
+
 ### May 6
 - In infer_pseudotime_metacell_01norm.py, added the function to merge cells into meta cells. Change z score normalization to min max normalization.
 - In spateotemporal_model_dynamic_global_percell.py, updated the way to embed expression values, added l1 normalization of regulatory networks.
